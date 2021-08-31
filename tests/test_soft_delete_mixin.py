@@ -1,85 +1,121 @@
+from datetime import datetime
+
 import pytest
 from sqlalchemy.orm.exc import ObjectDeletedError
 
 from tests.conftest import Account
 
 
-@pytest.mark.db
-def test_query_all(dbsession):
-    # Arrange
-    account1 = Account(name='account1')
-    account2 = Account(name='account2')
+class TestSoftDeleteMixin:
 
-    dbsession.add_all([account1, account2])
-    dbsession.flush()
+    @pytest.fixture(scope='function')
+    def account1(self, test_session):
+        account1 = Account(name='account1')
+        test_session.add(account1)
+        test_session.commit()
 
-    # Act
-    actual_accounts = dbsession.query(Account).all()
+        return account1
 
-    # Assert
-    assert set(actual_accounts) == {account1, account2}
+    @pytest.fixture(scope='function')
+    def account2(self, test_session):
+        account2 = Account(name='account2')
+        test_session.add(account2)
+        test_session.commit()
 
+        return account2
 
-@pytest.mark.db
-def test_get_all_not_deleted(dbsession):
-    # Arrange
-    account1 = Account(name='account1')
-    account2 = Account(name='account2')
-    account1.delete()
+    @pytest.fixture(scope='function')
+    def account3(self, test_session):
+        account3 = Account(name='account3')
+        test_session.add(account3)
+        test_session.commit()
 
-    dbsession.add_all([account1, account2])
-    dbsession.flush()
+        return account3
 
-    # Act
-    actual_accounts = dbsession.query(Account).all()
+    def test_query_all(self, test_session, account1, account2, account3):
+        import pdb; pdb.set_trace()
+        actual_accounts = test_session.query(Account).all()
+        assert set(actual_accounts) == {account1, account2, account3}
 
-    # Assert
-    assert actual_accounts == [account2]
+    def test_get_all_not_deleted(self, test_session, account1, account2):
+        account1.delete(test_session)
 
-
-@pytest.mark.db
-def test_filter_not_deleted(dbsession):
-    # Arrange
-    account1 = Account(name='account1')
-    account2 = Account(name='account2')
-    account3 = Account(name='account2')
-    account1.delete()
-
-    dbsession.add_all([account1, account2, account3])
-    dbsession.flush()
-
-    # Act
-    actual_accounts = dbsession.query(Account).filter(Account.name == 'account2').all()
-
-    # Assert
-    assert actual_accounts == [account2, account3]
+        actual_accounts = test_session.query(Account).all()
+        assert actual_accounts == [account2]
 
 
-@pytest.mark.db
-def test_get_not_deleted(dbsession):
-    # Arrange
-    account = Account(name='account')
+    def test_filter_not_deleted(self, test_session, account1, account2, account3):
+        account1.delete(test_session)
 
-    dbsession.add(account)
-    dbsession.flush()
+        actual_accounts = test_session.query(Account).filter(Account.name == 'account2').all()
+        assert actual_accounts == [account2]
 
-    # Act
-    actual_account = dbsession.query(Account).get(account.id)
+    def test_get_not_deleted(self, test_session, account1):
+        actual_account = Account.get(test_session, account1.id)
 
-    # Assert
-    assert actual_account == account
+        assert actual_account == account1
 
+    def test_get_deleted(self, test_session, account1):
+        account1.delete(test_session)
+        deleted_account =Account.get(test_session, account1.id)
 
-@pytest.mark.db
-def test_get_deleted(dbsession):
-    # Arrange
-    account = Account(name='account')
-    account.delete()
+        assert deleted_account is None
 
-    dbsession.add(account)
-    dbsession.flush()
-    dbsession.expire(account)
+    def test_get_deleted_with_include_deleted(self, test_session, account1):
+        account1.delete(test_session)
 
-    # Act & Assert
-    with pytest.raises(ObjectDeletedError):
-        dbsession.query(Account).get(account.id)
+        deleted_account = Account.get(test_session, account1.id, True)
+        assert deleted_account == account1
+        assert deleted_account.deleted_at is not None
+
+    def test_get_deleted_no_session(self, test_session, account1):
+        account1.delete()
+        test_session.commit()
+
+        deleted_account = Account.get(test_session, account1.id, True)
+        assert deleted_account == account1
+        assert deleted_account.deleted_at is not None
+
+    def test_restore(self, test_session, account1):
+        account1.delete(test_session)
+        account1.restore(test_session)
+
+        restored_account = Account.get(test_session, account1.id)
+        assert restored_account == account1
+        assert restored_account.deleted_at is None
+
+    def test_query_all_after_restore(self, test_session, account1, account2, account3):
+        account1.delete(test_session)
+        account1.restore(test_session)
+
+        actual_accounts = test_session.query(Account).all()
+        assert len(actual_accounts) == 3
+        assert all([acc.deleted_at == None for acc in actual_accounts]) is True
+
+    def test_get_restored_no_session(self, test_session, account1):
+        account1.delete(test_session)
+        account1.restore()
+        test_session.commit()
+
+        deleted_account = Account.get(test_session, account1.id)
+        assert deleted_account == account1
+        assert deleted_account.deleted_at is None
+
+    def test_update_to_deleted(self, test_session, account1):
+        account1.deleted_at = datetime.utcnow()
+        test_session.commit()
+
+        get_response = Account.get(test_session, account1.id)
+        deleted_account = Account.get(test_session, account1.id, True)
+        assert get_response is None
+        assert deleted_account is not None
+        assert deleted_account is not None
+
+    def test_update_to_restored(self, test_session, account1):
+        account1.delete(test_session)
+        account1.deleted_at = None
+        test_session.commit()
+
+        actual_account = Account.get(test_session, account1.id)
+        assert actual_account is not None
+        assert actual_account.deleted_at is None
